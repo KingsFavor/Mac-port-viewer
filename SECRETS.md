@@ -19,26 +19,32 @@ CI가 **Apple 공증 빌드**를 만들고 **Homebrew tap**을 자동 갱신하�
    - 이메일 입력, "디스크에 저장" 선택 → `.certSigningRequest` 파일 생성 → 업로드
 4. 발급된 `.cer` 다운로드 → 더블클릭해 키체인에 설치
 
-### 2. `.p12` 로 내보내기
-1. **키체인 접근** → 로그인 키체인 → "내 인증서" 카테고리
-2. `Developer ID Application: 이름 (팀ID)` 항목을 펼쳐 **개인 키까지 함께** 선택
-3. 우클릭 → **내보내기** → 형식 `.p12` → 암호 지정 (→ `MACOS_CERTIFICATE_PASSWORD`)
-4. base64 인코딩:
+### 2. `.p12` 로 내보내기 — ⚠️ **반드시 개인 키를 포함**해야 함
+> `.p12` 에 **개인 키가 빠지면** CI 의 codesign 이 `0 valid identities found` 로 실패합니다.
+> (이번에 발생한 원인이 이것입니다.)
+
+1. **키체인 접근** → 로그인 키체인 → 왼쪽 카테고리에서 반드시 **"내 인증서(My Certificates)"** 선택
+   - "인증서(Certificates)" 카테고리에서 내보내면 **개인 키가 빠집니다.**
+2. `Developer ID Application: 이름 (팀ID)` 항목 왼쪽 **▶ 삼각형을 펼쳐** 그 아래 **개인 키가 있는지 확인**
+   - 삼각형/개인 키가 **없으면** 이 Mac 에는 개인 키가 없는 것입니다 → CSR 을 만든(=인증서를 처음 발급받은) Mac 에서 내보내거나, 인증서를 폐기하고 재발급하세요.
+3. 인증서 항목을 우클릭 → **내보내기** → 형식 `개인 정보 교환(.p12)` → 암호 지정 (→ `MACOS_CERTIFICATE_PASSWORD`)
+4. **업로드 전 로컬 검증** (개인 키 포함 여부 확인):
+   ```bash
+   # 개인 키가 있으면 아래에 "PRIVATE KEY" 가 출력됨 (없으면 빈 출력 → 다시 내보내기)
+   openssl pkcs12 -in Certificates.p12 -nocerts -nodes -passin pass:암호 2>/dev/null | grep -c "PRIVATE KEY"
+   # 또는: 로컬 키체인에 아이덴티티가 보이는지
+   security find-identity -v -p codesigning | grep "Developer ID Application"
+   ```
+5. base64 인코딩:
    ```bash
    base64 -i Certificates.p12 | pbcopy   # 클립보드로 복사 → MACOS_CERTIFICATE_BASE64
    ```
 
-### 3. 서명 아이덴티티 문자열 확인
-```bash
-security find-identity -v -p codesigning
-# 예: "Developer ID Application: Hong Gildong (AB12CD34EF)"  → MACOS_SIGN_IDENTITY
-```
-
 | 시크릿 | 값 |
 |--------|-----|
-| `MACOS_CERTIFICATE_BASE64` | 위 2번에서 복사한 base64 |
+| `MACOS_CERTIFICATE_BASE64` | 위 2번에서 복사한 base64 (**개인 키 포함 필수**) |
 | `MACOS_CERTIFICATE_PASSWORD` | .p12 내보낼 때 지정한 암호 |
-| `MACOS_SIGN_IDENTITY` | 위 3번의 전체 문자열 |
+| `MACOS_SIGN_IDENTITY` | (선택) CI 가 키체인에서 아이덴티티를 자동 검출하므로 없어도 됨 |
 | `KEYCHAIN_PASSWORD` | (선택) 아무 값. 미지정 시 자동 생성 |
 
 ---
