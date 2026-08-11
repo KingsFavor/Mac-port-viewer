@@ -1,0 +1,187 @@
+import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private var statusItem: NSStatusItem!
+    private let menu = NSMenu()
+
+    // 설정 (UserDefaults 영속)
+    private let defaults = UserDefaults.standard
+    private var showSystem: Bool {
+        get { defaults.bool(forKey: "showSystemPorts") }
+        set { defaults.set(newValue, forKey: "showSystemPorts") }
+    }
+
+    // 마지막 스캔 결과 (메뉴가 열려 있는 동안 액션에서 사용)
+    private var lastScan: [PortProcess] = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // 메뉴바 전용 앱: Dock/앱 전환기에 표시하지 않음
+        NSApp.setActivationPolicy(.accessory)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            let image = NSImage(
+                systemSymbolName: "fish.fill",
+                accessibilityDescription: "Port Killer"
+            )
+            image?.isTemplate = true
+            button.image = image
+        }
+
+        menu.delegate = self
+        statusItem.menu = menu
+    }
+
+    // 메뉴가 열릴 때마다 최신 상태로 다시 그린다.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        rebuildMenu()
+    }
+
+    private func rebuildMenu() {
+        menu.removeAllItems()
+
+        let all = PortScanner.scan()
+        let visible = showSystem ? all : all.filter { !$0.isLikelySystem }
+        lastScan = visible
+
+        // 헤더
+        let header = NSMenuItem(
+            title: visible.isEmpty
+                ? "열려 있는 개발 포트가 없습니다"
+                : "개발 포트 \(visible.count)개 사용 중",
+            action: nil,
+            keyEquivalent: ""
+        )
+        header.isEnabled = false
+        menu.addItem(header)
+        menu.addItem(.separator())
+
+        // 포트 목록
+        for proc in visible {
+            menu.addItem(makePortItem(proc))
+        }
+
+        if !visible.isEmpty {
+            menu.addItem(.separator())
+        }
+
+        // 새로고침
+        let refresh = NSMenuItem(title: "새로고침", action: #selector(refreshClicked), keyEquivalent: "r")
+        refresh.target = self
+        menu.addItem(refresh)
+
+        // 시스템 포트 표시 토글
+        let toggle = NSMenuItem(title: "시스템 · 백그라운드 포트 표시", action: #selector(toggleSystem), keyEquivalent: "")
+        toggle.target = self
+        toggle.state = showSystem ? .on : .off
+        menu.addItem(toggle)
+
+        menu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Port Killer 종료", action: #selector(quitApp), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+    }
+
+    private func makePortItem(_ proc: PortProcess) -> NSMenuItem {
+        let scopeIcon = proc.isLoopbackOnly ? "🏠" : "🌐"
+        let title = "\(scopeIcon) \(proc.port)  ·  \(proc.command)  (PID \(proc.pid))"
+
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+
+        // 각 포트는 서브메뉴로 액션 제공
+        let submenu = NSMenu()
+
+        let term = NSMenuItem(title: "종료 (SIGTERM)", action: #selector(killTerm(_:)), keyEquivalent: "")
+        term.target = self
+        term.representedObject = proc
+        submenu.addItem(term)
+
+        let force = NSMenuItem(title: "강제 종료 (SIGKILL)", action: #selector(killForce(_:)), keyEquivalent: "")
+        force.target = self
+        force.representedObject = proc
+        submenu.addItem(force)
+
+        submenu.addItem(.separator())
+
+        let copyPort = NSMenuItem(title: "포트 번호 복사", action: #selector(copyPort(_:)), keyEquivalent: "")
+        copyPort.target = self
+        copyPort.representedObject = proc
+        submenu.addItem(copyPort)
+
+        let copyPid = NSMenuItem(title: "PID 복사", action: #selector(copyPid(_:)), keyEquivalent: "")
+        copyPid.target = self
+        copyPid.representedObject = proc
+        submenu.addItem(copyPid)
+
+        item.submenu = submenu
+        return item
+    }
+
+    // MARK: - Actions
+
+    @objc private func refreshClicked() {
+        rebuildMenu()
+    }
+
+    @objc private func toggleSystem() {
+        showSystem.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func killTerm(_ sender: NSMenuItem) {
+        guard let proc = sender.representedObject as? PortProcess else { return }
+        performKill(proc, force: false)
+    }
+
+    @objc private func killForce(_ sender: NSMenuItem) {
+        guard let proc = sender.representedObject as? PortProcess else { return }
+        performKill(proc, force: true)
+    }
+
+    private func performKill(_ proc: PortProcess, force: Bool) {
+        let result = ProcessKiller.kill(pid: proc.pid, force: force)
+        switch result {
+        case .success:
+            Notifier.show(
+                title: "포트 \(proc.port) 정리됨",
+                body: "\(proc.command) (PID \(proc.pid)) 프로세스를 종료했습니다."
+            )
+        case .notPermitted:
+            Notifier.show(
+                title: "종료 권한 없음",
+                body: "\(proc.command) (PID \(proc.pid)) 는 현재 사용자 권한으로 종료할 수 없습니다."
+            )
+        case .noSuchProcess:
+            Notifier.show(
+                title: "이미 종료됨",
+                body: "PID \(proc.pid) 프로세스가 이미 종료되었습니다."
+            )
+        case .failed(let message):
+            Notifier.show(
+                title: "종료 실패",
+                body: "\(proc.command) (PID \(proc.pid)): \(message)"
+            )
+        }
+    }
+
+    @objc private func copyPort(_ sender: NSMenuItem) {
+        guard let proc = sender.representedObject as? PortProcess else { return }
+        setClipboard(String(proc.port))
+    }
+
+    @objc private func copyPid(_ sender: NSMenuItem) {
+        guard let proc = sender.representedObject as? PortProcess else { return }
+        setClipboard(String(proc.pid))
+    }
+
+    private func setClipboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
+    }
+}

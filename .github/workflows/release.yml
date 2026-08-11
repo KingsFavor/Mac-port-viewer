@@ -1,0 +1,136 @@
+name: Release
+
+# main 에 푸시될 때마다 Apple 공증(notarization)된 빌드를 릴리즈한다.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: macos-14
+    env:
+      # 서명/공증 시크릿 (Settings → Secrets → Actions 에 등록)
+      MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY_BASE64 }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+      APP_NAME: "Port Killer"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || true
+
+      - name: Show versions
+        run: swift --version && xcodebuild -version
+
+      - name: Build .app bundle
+        run: ./make_app.sh
+
+      - name: Determine version
+        id: ver
+        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      # ---- 코드 서명 (Developer ID Application) ----
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE_BASE64 != ''
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KPW="${KEYCHAIN_PASSWORD:-ci-temp-$RANDOM}"
+          echo "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Codesign app (hardened runtime)
+        if: env.MACOS_CERTIFICATE_BASE64 != ''
+        run: |
+          set -euo pipefail
+          APP="build/${APP_NAME}.app"
+          codesign --force --deep --timestamp --options runtime \
+            --sign "$MACOS_SIGN_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      # ---- 공증 (notarytool) ----
+      - name: Notarize & staple
+        if: env.MACOS_CERTIFICATE_BASE64 != '' && env.NOTARY_KEY_BASE64 != ''
+        run: |
+          set -euo pipefail
+          APP="build/${APP_NAME}.app"
+          echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      # ---- 배포 아티팩트 생성 (zip + dmg) ----
+      - name: Package artifacts
+        id: pkg
+        run: |
+          set -euo pipefail
+          APP="build/${APP_NAME}.app"
+          V="${{ steps.ver.outputs.version }}"
+          ZIP="build/PortKiller-${V}.zip"
+          DMG="build/PortKiller-${V}.dmg"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          # 드래그 설치용 DMG
+          STAGE="$RUNNER_TEMP/dmg"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+
+      - name: Signing status note
+        run: |
+          if [ -z "${MACOS_CERTIFICATE_BASE64}" ]; then
+            echo "::warning::서명 시크릿이 없어 서명되지 않은 빌드를 릴리즈합니다. 공증 릴리즈를 원하면 README 의 시크릿을 등록하세요."
+          elif [ -z "${NOTARY_KEY_BASE64}" ]; then
+            echo "::warning::서명은 되었으나 공증 시크릿(NOTARY_*)이 없어 공증을 건너뜁니다."
+          else
+            echo "서명 + 공증 완료 빌드입니다."
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          TAG="v${V}"
+          NOTES="Automated build from \`main\` (run #${{ github.run_number }})."
+          if [ -z "${MACOS_CERTIFICATE_BASE64}" ] || [ -z "${NOTARY_KEY_BASE64}" ]; then
+            NOTES="$NOTES\n\n> ⚠️ 이 빌드는 Apple 공증이 적용되지 않았습니다. 실행 시 우클릭 → 열기가 필요할 수 있습니다."
+          fi
+          gh release create "$TAG" \
+            "${{ steps.pkg.outputs.dmg }}" \
+            "${{ steps.pkg.outputs.zip }}" \
+            --title "Port Killer $V" \
+            --notes "$(printf "$NOTES")" \
+            --latest

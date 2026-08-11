@@ -1,0 +1,14 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+
+# 빌드 산출물 (앱 번들 · iconset)
+build/
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcodeproj
+xcuserdata/
