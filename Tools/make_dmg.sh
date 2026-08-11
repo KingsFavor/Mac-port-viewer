@@ -33,9 +33,27 @@ ln -s /Applications "${STAGE}/Applications"
 SIZE_KB=$(du -sk "${STAGE}" | awk '{print $1}')
 SIZE_MB=$(( SIZE_KB / 1024 + 40 ))
 
+# 남아있을 수 있는 동일 이름 볼륨 정리 (Resource busy 예방)
+for v in "/Volumes/${VOL_NAME}"*; do
+    [ -d "$v" ] && hdiutil detach "$v" -force >/dev/null 2>&1 || true
+done
+sync
+sleep 1
+
 echo "▶ 임시 DMG 생성 (${SIZE_MB}MB)..."
-hdiutil create -srcfolder "${STAGE}" -volname "${VOL_NAME}" -fs HFS+ \
-    -format UDRW -size "${SIZE_MB}m" "${RW_DMG}" >/dev/null
+# CI 러너에서 Spotlight/fsevents 로 인해 간헐적으로 "Resource busy" 가 나므로 재시도한다.
+attempt=0
+until hdiutil create -srcfolder "${STAGE}" -volname "${VOL_NAME}" -fs HFS+ \
+        -format UDRW -size "${SIZE_MB}m" "${RW_DMG}" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "${attempt}" -ge 5 ]; then
+        echo "❌ DMG 생성 실패 (Resource busy 재시도 ${attempt}회 초과)"
+        exit 1
+    fi
+    echo "  재시도 ${attempt}/5 (Resource busy, 3초 대기)..."
+    rm -f "${RW_DMG}"
+    sleep 3
+done
 
 echo "▶ 마운트..."
 MOUNT_DIR="/Volumes/${VOL_NAME}"
