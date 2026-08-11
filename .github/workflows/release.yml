@@ -1,12 +1,12 @@
 name: Release
 
-# main 에 푸시될 때마다 Apple 공증(notarization)된 빌드를 릴리즈한다.
+# `v*` 태그를 푸시하면 Apple 공증(notarization)된 빌드를 릴리즈한다.
+#   예: git tag v1.2.0 && git push origin v1.2.0
+# workflow_dispatch(수동 실행)는 릴리즈 없이 빌드만 검증한다.
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
+    tags:
+      - "v*"
   workflow_dispatch: {}
 
 permissions:
@@ -45,9 +45,21 @@ jobs:
       - name: Build .app bundle
         run: ./make_app.sh
 
-      - name: Determine version
+      - name: Determine version & release mode
         id: ver
-        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"          # 예: v1.2.0
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            # 수동 실행: 최신 태그로 빌드만 (릴리즈/태그 생성 안 함)
+            TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "▶ tag=$TAG version=${TAG#v}"
 
       # ---- 코드 서명 (Developer ID Application) ----
       - name: Import signing certificate
@@ -114,18 +126,20 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
-          PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          TAG="${{ steps.ver.outputs.tag }}"
+          # 현재 태그 직전의 태그 (없으면 첫 릴리즈)
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           NOTES_FILE="$RUNNER_TEMP/notes.md"
           {
             echo "## Port Killer $V"
             echo ""
             echo "### Changes"
             if [ -n "$PREV" ]; then
-              git log "${PREV}..HEAD" --no-merges --pretty='- %s (%h)' | grep -v -i 'Co-Authored-By' || echo "- (변경 사항 없음)"
+              git log "${PREV}..${TAG}" --no-merges --pretty='- %s (%h)' | grep -v -i 'Co-Authored-By' || echo "- (변경 사항 없음)"
               echo ""
-              echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...v${V}"
+              echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
             else
-              git log --no-merges --pretty='- %s (%h)' | grep -v -i 'Co-Authored-By' || echo "- 첫 릴리즈"
+              git log "${TAG}" --no-merges --pretty='- %s (%h)' | grep -v -i 'Co-Authored-By' || echo "- 첫 릴리즈"
             fi
             echo ""
             echo "### 설치"
@@ -151,12 +165,14 @@ jobs:
           fi
 
       - name: Create GitHub Release
+        if: steps.ver.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
-          TAG="v${V}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          # 태그는 이미 푸시되어 존재하므로 해당 태그로 릴리즈 생성
           gh release create "$TAG" \
             "${{ steps.pkg.outputs.dmg }}" \
             "${{ steps.pkg.outputs.zip }}" \
@@ -166,7 +182,7 @@ jobs:
 
       # ---- Homebrew Cask 자동 업데이트 (별도 tap 리포에 push) ----
       - name: Update Homebrew tap
-        if: env.TAP_GITHUB_TOKEN != ''
+        if: steps.ver.outputs.release == 'true' && env.TAP_GITHUB_TOKEN != ''
         env:
           TAP_REPO: KingsFavor/homebrew-tap
         run: |

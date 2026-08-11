@@ -54,16 +54,23 @@ swift build
 
 ## 자동 릴리즈 (CI)
 
-`main` 브랜치에 푸시되면 GitHub Actions(`.github/workflows/release.yml`)가 자동으로:
+**`v*` 태그를 푸시하면** GitHub Actions(`.github/workflows/release.yml`)가 자동으로:
 
-1. 릴리즈 빌드 → `.app` 번들 생성 (물고기 아이콘 포함)
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+1. 태그 커밋을 릴리즈 빌드 → `.app` 번들 생성 (물고기 아이콘 포함)
 2. Developer ID 인증서로 코드 서명 (Hardened Runtime)
 3. `notarytool` 로 Apple 공증 → `stapler` 로 티켓 스테이플
 4. 배경/레이아웃이 입혀진 설치용 **`.dmg`** + **`.zip`** 생성
-5. 직전 태그 이후 커밋으로 **릴리즈 노트 자동 생성** → `v1.0.<run_number>` 태그로 GitHub Release 발행
+5. 직전 태그 이후 커밋으로 **릴리즈 노트 자동 생성** → 해당 태그로 GitHub Release 발행 (버전 = 태그에서 `v` 제거)
 6. **Homebrew tap**(`KingsFavor/homebrew-tap`)의 Cask 를 새 버전으로 자동 갱신
 
-시크릿이 없으면 해당 단계(서명·공증·탭 갱신)만 건너뛰고 파이프라인은 계속 진행합니다.
+- 버전은 태그 이름을 그대로 따릅니다 (`v1.2.0` → `1.2.0`).
+- 시크릿이 없으면 해당 단계(서명·공증·탭 갱신)만 건너뛰고 파이프라인은 계속 진행합니다.
+- Actions 탭의 **Run workflow**(workflow_dispatch)로 수동 실행하면 릴리즈 없이 빌드만 검증합니다.
 
 ### 필요한 GitHub Secrets
 
