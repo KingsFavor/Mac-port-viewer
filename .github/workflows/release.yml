@@ -72,17 +72,32 @@ jobs:
           security create-keychain -p "$KPW" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KPW" "$KEYCHAIN"
+
+          # Apple 중간 인증서 설치 (체인 검증 → 아이덴티티가 valid 로 인식되도록)
+          for url in \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer ; do
+            f="$RUNNER_TEMP/$(basename "$url")"
+            curl -fsSL -o "$f" "$url" && security import "$f" -k "$KEYCHAIN" 2>/dev/null || true
+          done
+
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
             -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KEYCHAIN" >/dev/null
           # 검색 목록에 빌드 키체인 추가 (기존 항목 유지)
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          # Developer ID Application 아이덴티티를 키체인에서 자동 검출 (이름 문자열 불일치 방지)
-          N=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c 'Developer ID Application' || true)
-          echo "▶ Developer ID Application 아이덴티티 ${N}개 검출"
+
+          echo "▶ 진단:"
+          echo "   전체 아이덴티티(인증서+개인키): $(security find-identity -v "$KEYCHAIN" | tail -1)"
+          echo "   코드사인 유효 아이덴티티:       $(security find-identity -v -p codesigning "$KEYCHAIN" | tail -1)"
+
+          # Developer ID Application 아이덴티티 해시 검출 (valid 우선, 없으면 invalid 포함 재시도)
           SIGN_ID=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/{print $2; exit}')
           if [ -z "$SIGN_ID" ]; then
-            echo "::error::키체인에서 Developer ID Application 아이덴티티를 찾지 못했습니다. .p12 에 인증서 + 개인키가 함께 포함되어 있는지 확인하세요."
+            SIGN_ID=$(security find-identity -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/{print $2; exit}')
+          fi
+          if [ -z "$SIGN_ID" ]; then
+            echo "::error::Developer ID Application 아이덴티티를 찾지 못했습니다. 위 진단에서 '전체 아이덴티티'가 0 valid 이면 .p12 에 개인키가 빠진 것이고(키체인에서 인증서를 펼쳐 개인키까지 함께 선택해 내보내기), 0 이 아니면 인증서 종류가 Developer ID Application 이 아닙니다."
             exit 1
           fi
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
