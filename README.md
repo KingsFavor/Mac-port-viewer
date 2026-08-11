@@ -13,10 +13,20 @@ macOS 메뉴바에 상주하며 **개발 서버가 점유 중인 포트**를 한
 - "시스템 · 백그라운드 포트 표시" 토글 (기본 숨김)
 - Dock/앱 전환기에 뜨지 않는 순수 메뉴바 앱 (`LSUIElement`)
 
-## 빌드 & 실행
+## 설치
+
+### Homebrew (권장)
 
 ```bash
-# 앱 번들 생성 (릴리즈 빌드 + 코드사인)
+brew install --cask kingsfavor/tap/port-killer
+```
+
+> 공증 전 빌드는 첫 실행 시 Gatekeeper 경고가 날 수 있습니다: `brew install --cask --no-quarantine kingsfavor/tap/port-killer`
+
+### 직접 빌드
+
+```bash
+# 앱 번들 생성 (릴리즈 빌드 + 아이콘 + 코드사인)
 ./make_app.sh
 
 # 실행
@@ -46,35 +56,37 @@ swift build
 
 `main` 브랜치에 푸시되면 GitHub Actions(`.github/workflows/release.yml`)가 자동으로:
 
-1. 릴리즈 빌드 → `.app` 번들 생성
+1. 릴리즈 빌드 → `.app` 번들 생성 (물고기 아이콘 포함)
 2. Developer ID 인증서로 코드 서명 (Hardened Runtime)
 3. `notarytool` 로 Apple 공증 → `stapler` 로 티켓 스테이플
-4. `.dmg` · `.zip` 생성 후 `v1.0.<run_number>` 태그로 GitHub Release 발행
+4. 배경/레이아웃이 입혀진 설치용 **`.dmg`** + **`.zip`** 생성
+5. 직전 태그 이후 커밋으로 **릴리즈 노트 자동 생성** → `v1.0.<run_number>` 태그로 GitHub Release 발행
+6. **Homebrew tap**(`KingsFavor/homebrew-tap`)의 Cask 를 새 버전으로 자동 갱신
 
-서명/공증 시크릿이 없으면 서명 없는 빌드를 릴리즈하고 경고를 남깁니다(파이프라인은 실패하지 않음).
+시크릿이 없으면 해당 단계(서명·공증·탭 갱신)만 건너뛰고 파이프라인은 계속 진행합니다.
 
 ### 필요한 GitHub Secrets
 
-Apple Developer 계정($99/년)이 있어야 하며, 리포지토리 **Settings → Secrets and variables → Actions** 에 등록합니다.
+Apple Developer 계정($99/년)이 필요하며, **어디서 어떻게 발급받는지**는 👉 **[SECRETS.md](SECRETS.md)** 에 단계별로 정리했습니다.
 
-| Secret | 설명 | 얻는 법 |
-|--------|------|---------|
-| `MACOS_CERTIFICATE_BASE64` | Developer ID Application 인증서(.p12)를 base64 인코딩 | 키체인에서 인증서+개인키 내보내기 → `base64 -i cert.p12 \| pbcopy` |
-| `MACOS_CERTIFICATE_PASSWORD` | 위 .p12 내보낼 때 설정한 암호 | 직접 지정 |
-| `MACOS_SIGN_IDENTITY` | 서명 아이덴티티 문자열 | 예: `Developer ID Application: 홍길동 (TEAMID123)` |
-| `NOTARY_KEY_BASE64` | App Store Connect API 키(.p8)를 base64 인코딩 | [App Store Connect → Users and Access → Integrations](https://appstoreconnect.apple.com/access/integrations/api) 에서 키 발급 후 `base64 -i AuthKey_XXX.p8 \| pbcopy` |
-| `NOTARY_KEY_ID` | API 키 ID | 위 페이지의 Key ID |
-| `NOTARY_ISSUER_ID` | API 발급자(Issuer) ID | 위 페이지의 Issuer ID |
-| `KEYCHAIN_PASSWORD` | (선택) 임시 키체인 암호 | 아무 값이나 지정 (미지정 시 자동 생성) |
+요약:
 
-> 인증서만 있고 공증 키가 없으면 서명만 하고 공증은 건너뜁니다.
+| 그룹 | Secret | 용도 |
+|------|--------|------|
+| 서명 | `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY` | Developer ID 코드 서명 |
+| 공증 | `NOTARY_KEY_BASE64`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | App Store Connect API 키로 공증 |
+| 배포 | `TAP_GITHUB_TOKEN` | Homebrew tap 리포 자동 갱신 |
 
 ## 구조
 
-| 파일 | 역할 |
+| 경로 | 역할 |
 |------|------|
-| `PortScanner.swift` | `lsof` 실행 · 파싱 · 시스템 포트 필터링 |
-| `ProcessKiller.swift` | SIGTERM/SIGKILL 전송 및 결과 분류 |
-| `AppDelegate.swift` | 메뉴바 상태 아이템 · 메뉴 구성 · 액션 |
-| `Notifier.swift` | 종료 결과 시스템 알림 |
-| `main.swift` | 진입점 · `--list` CLI 모드 |
+| `Sources/PortKiller/PortScanner.swift` | `lsof` 실행 · 파싱 · 시스템 포트 필터링 |
+| `Sources/PortKiller/ProcessKiller.swift` | SIGTERM/SIGKILL 전송 및 결과 분류 |
+| `Sources/PortKiller/AppDelegate.swift` | 메뉴바 상태 아이템 · 메뉴 구성 · 액션 |
+| `Sources/PortKiller/Notifier.swift` | 종료 결과 시스템 알림 |
+| `Sources/PortKiller/main.swift` | 진입점 · `--list` CLI 모드 |
+| `Tools/GenerateIcon.swift` | 물고기 앱 아이콘(.icns) 생성 |
+| `Tools/GenerateDMGBackground.swift` | DMG 배경 이미지 생성 |
+| `Tools/make_dmg.sh` | 배경/레이아웃 적용 설치 DMG 빌드 |
+| `make_app.sh` | `.app` 번들 빌드 + 서명 |
