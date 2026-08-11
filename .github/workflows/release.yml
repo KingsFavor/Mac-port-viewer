@@ -185,7 +185,7 @@ jobs:
       - name: Signing status note
         run: |
           if [ -z "${MACOS_CERTIFICATE_BASE64}" ]; then
-            echo "::warning::서명 시크릿이 없어 서명되지 않은 빌드를 릴리즈합니다. 공증 릴리즈를 원하면 README 의 시크릿을 등록하세요."
+            echo "::warning::서명 시크릿이 없어 서명되지 않은 빌드를 릴리즈합니다. 공증 릴리즈를 원하면 docs/SECRETS.md 의 시크릿을 등록하세요."
           elif [ -z "${NOTARY_KEY_BASE64}" ]; then
             echo "::warning::서명은 되었으나 공증 시크릿(NOTARY_*)이 없어 공증을 건너뜁니다."
           else
