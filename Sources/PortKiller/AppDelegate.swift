@@ -54,11 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         rebuildMenu()
     }
 
-    /// 업데이트 유무를 상태 아이콘 툴팁에 은은하게 반영한다.
+    /// 업데이트 상태를 상태 아이콘 툴팁에 은은하게 반영한다.
     private func applyUpdateBadge() {
-        if let update = UpdateChecker.shared.availableUpdate {
-            statusItem?.button?.toolTip = "Port Killer — 새 버전 \(update.version) 사용 가능"
-        } else {
+        switch UpdateChecker.shared.actionableUpdate {
+        case .downloadable(let version, _):
+            statusItem?.button?.toolTip = "Port Killer — 새 버전 \(version) 사용 가능"
+        case .pendingRestart(let version):
+            statusItem?.button?.toolTip = "Port Killer — \(version) 설치됨, 재실행하면 적용"
+        case .upToDate, .failed:
             statusItem?.button?.toolTip = "Port Killer"
         }
     }
@@ -108,23 +111,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menu.addItem(checkUpdate)
 
         // 업데이트 안내 (있을 때만, 포트 목록 아래 · 종료 위에 은은하게)
-        if let update = UpdateChecker.shared.availableUpdate {
+        switch UpdateChecker.shared.actionableUpdate {
+        case .downloadable(let version, _):
             menu.addItem(.separator())
-
-            let item = NSMenuItem(title: "새 버전 \(update.version) 사용 가능", action: nil, keyEquivalent: "")
+            let item = NSMenuItem(title: "새 버전 \(version) 사용 가능", action: nil, keyEquivalent: "")
             item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
 
             let sub = NSMenu()
             let notes = NSMenuItem(title: "릴리즈 노트 보기", action: #selector(openReleaseNotes), keyEquivalent: "")
             notes.target = self
             sub.addItem(notes)
-
             let copyCmd = NSMenuItem(title: "업데이트 명령 복사 (brew)", action: #selector(copyUpgradeCommand), keyEquivalent: "")
             copyCmd.target = self
             sub.addItem(copyCmd)
-
             item.submenu = sub
             menu.addItem(item)
+
+        case .pendingRestart(let version):
+            // 이미 디스크에 설치됨 → 재실행하면 적용. 클릭 = 재실행.
+            menu.addItem(.separator())
+            let item = NSMenuItem(
+                title: "재실행하여 \(version) 적용",
+                action: #selector(relaunchApp),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.image = NSImage(systemSymbolName: "arrow.clockwise.circle.fill", accessibilityDescription: nil)
+            menu.addItem(item)
+
+        case .upToDate, .failed:
+            break
         }
 
         menu.addItem(.separator())
@@ -272,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         alert.icon = NSApp.applicationIconImage
 
         switch result {
-        case .updateAvailable(let version, let url):
+        case .downloadable(let version, let url):
             alert.messageText = "새 버전 \(version) 사용 가능"
             alert.informativeText = "현재 \(UpdateChecker.currentVersion) 버전을 사용 중입니다."
             alert.addButton(withTitle: "릴리즈 노트 보기")
@@ -282,9 +298,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             case .alertFirstButtonReturn:
                 NSWorkspace.shared.open(url)
             case .alertSecondButtonReturn:
-                setClipboard("brew upgrade --cask port-killer")
+                setClipboard(UpdateChecker.brewUpgradeCommand)
             default:
                 break
+            }
+
+        case .pendingRestart(let version):
+            alert.messageText = "\(version) 이(가) 설치되어 있습니다"
+            alert.informativeText = "실행 중인 앱은 아직 \(UpdateChecker.currentVersion) 입니다. 재실행하면 \(version) 이 적용됩니다."
+            alert.addButton(withTitle: "지금 재실행")
+            alert.addButton(withTitle: "나중에")
+            if alert.runModal() == .alertFirstButtonReturn {
+                relaunchApp()
             }
 
         case .upToDate(let current):
@@ -312,12 +337,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     @objc private func openReleaseNotes() {
-        guard let update = UpdateChecker.shared.availableUpdate else { return }
-        NSWorkspace.shared.open(update.url)
+        if case .downloadable(_, let url) = UpdateChecker.shared.actionableUpdate {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// 디스크에 설치된 최신 번들로 새 인스턴스를 띄우고 현재(옛 버전) 프로세스를 종료한다.
+    @objc private func relaunchApp() {
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     @objc private func copyUpgradeCommand() {
-        let cmd = "brew upgrade --cask port-killer"
+        let cmd = UpdateChecker.brewUpgradeCommand
         setClipboard(cmd)
         Notifier.show(
             title: "업데이트 명령 복사됨",

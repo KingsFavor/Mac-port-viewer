@@ -19,26 +19,57 @@ final class UpdateChecker {
     private let latestVersionKey = "update.latestVersion"
     private let latestURLKey = "update.latestURL"
 
-    /// 현재 앱 버전 (Info.plist CFBundleShortVersionString)
+    /// Homebrew 업데이트 명령. `brew update` 를 포함해야 tap 캐시가 갱신되어
+    /// "이미 최신 버전" 오판 없이 실제 새 버전으로 업그레이드된다.
+    static let brewUpgradeCommand = "brew update && brew upgrade --cask port-killer"
+
+    /// 실행 중인 프로세스의 버전. 앱 시작 시점의 Info.plist 값(메모리 캐시)이라,
+    /// 실행 도중 brew 가 번들을 교체해도 이 값은 바뀌지 않는다.
     static var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    /// 새 버전이 있으면 (버전, 릴리즈 페이지 URL) 을 반환. 없으면 nil.
-    /// 캐시된 최신 버전이 현재 버전보다 높을 때만 유효로 취급한다.
-    var availableUpdate: (version: String, url: URL)? {
-        guard let v = defaults.string(forKey: latestVersionKey),
-              let urlString = defaults.string(forKey: latestURLKey),
-              let url = URL(string: urlString),
-              Self.isNewer(v, than: Self.currentVersion) else { return nil }
-        return (v, url)
+    /// 디스크에 설치된 .app 번들의 버전을 매번 새로 읽는다.
+    /// brew 업그레이드로 번들이 교체되면 currentVersion 보다 높아진다 → "재실행 필요" 판별에 사용.
+    static var installedVersion: String? {
+        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        guard let dict = NSDictionary(contentsOf: plist),
+              let v = dict["CFBundleShortVersionString"] as? String else { return nil }
+        return v
     }
 
-    /// 확인 결과 (수동 확인 시 사용자에게 피드백을 주기 위한 값).
+    /// 확인/표시에 쓰는 실행 가능한 상태.
     enum CheckResult {
-        case upToDate(current: String)
-        case updateAvailable(version: String, url: URL)
-        case failed
+        case upToDate(current: String)                     // 최신
+        case downloadable(version: String, url: URL)       // 새 버전 있음 (아직 미설치)
+        case pendingRestart(version: String)               // 디스크엔 새 버전, 재실행하면 적용
+        case failed                                        // 확인 실패
+    }
+
+    /// 현재 알려진 정보로 판단한 실행 가능한 상태 (네트워크 없이 캐시/디스크 기준).
+    /// 메뉴·툴팁 표시에 사용한다.
+    var actionableUpdate: CheckResult {
+        resolvedResult(networkOK: true)
+    }
+
+    /// 상태 판정: 디스크에 이미 새 버전이 있으면 재실행, 아니면 릴리즈 캐시로 다운로드 안내.
+    private func resolvedResult(networkOK: Bool) -> CheckResult {
+        let running = Self.currentVersion
+
+        // 1) 디스크 번들이 실행 중 버전보다 높으면 → 재실행만 하면 적용됨
+        if let disk = Self.installedVersion, Self.isNewer(disk, than: running) {
+            return .pendingRestart(version: disk)
+        }
+
+        // 2) 릴리즈에 더 높은 버전이 있으면 → 업그레이드(다운로드) 안내
+        if let v = defaults.string(forKey: latestVersionKey),
+           let s = defaults.string(forKey: latestURLKey),
+           let url = URL(string: s),
+           Self.isNewer(v, than: running) {
+            return .downloadable(version: v, url: url)
+        }
+
+        return networkOK ? .upToDate(current: running) : .failed
     }
 
     /// 간격이 지났을 때만 백그라운드에서 조용히 확인한다.
@@ -53,8 +84,11 @@ final class UpdateChecker {
         }
 
         fetchLatest { result in
-            if case .updateAvailable = result {
+            switch result {
+            case .downloadable, .pendingRestart:
                 DispatchQueue.main.async { onNewVersion?() }
+            case .upToDate, .failed:
+                break
             }
         }
     }
@@ -66,10 +100,11 @@ final class UpdateChecker {
         }
     }
 
-    /// 최신 릴리즈를 조회하고 결과를 캐시한다. (완료 콜백은 임의 스레드)
+    /// 최신 릴리즈를 조회해 캐시한 뒤, 디스크/캐시 기준의 실행 가능한 상태를 돌려준다.
+    /// (완료 콜백은 임의 스레드)
     private func fetchLatest(_ done: @escaping (CheckResult) -> Void) {
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
-            done(.failed); return
+            done(resolvedResult(networkOK: false)); return
         }
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -77,7 +112,7 @@ final class UpdateChecker {
         req.cachePolicy = .reloadIgnoringLocalCacheData
 
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
-            guard let self else { done(.failed); return }
+            guard let self else { return }
             // 성공/실패와 무관하게 마지막 확인 시각을 갱신해 재시도 폭주를 막는다.
             self.defaults.set(Date(), forKey: self.lastCheckKey)
 
@@ -85,7 +120,8 @@ final class UpdateChecker {
                   let http = resp as? HTTPURLResponse, http.statusCode == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tag = json["tag_name"] as? String else {
-                done(.failed); return
+                // 네트워크 실패라도 디스크에 새 버전이 있으면 재실행 안내가 우선한다.
+                done(self.resolvedResult(networkOK: false)); return
             }
 
             let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
@@ -95,12 +131,7 @@ final class UpdateChecker {
             self.defaults.set(version, forKey: self.latestVersionKey)
             self.defaults.set(htmlURL, forKey: self.latestURLKey)
 
-            if Self.isNewer(version, than: Self.currentVersion),
-               let url = URL(string: htmlURL) {
-                done(.updateAvailable(version: version, url: url))
-            } else {
-                done(.upToDate(current: Self.currentVersion))
-            }
+            done(self.resolvedResult(networkOK: true))
         }.resume()
     }
 
