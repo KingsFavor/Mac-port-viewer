@@ -10,6 +10,13 @@ BUILD_DIR=".build/release"
 APP_DIR="build/${APP_NAME}.app"
 BIN_NAME="PortKiller"
 
+# 앱 버전: CI 는 APP_VERSION 을 주입한다(릴리즈 태그 기준).
+# 로컬 빌드는 최신 git 태그 → 없으면 0.0.0-dev 로 둔다.
+# (인앱 업데이트 확인이 이 값을 최신 릴리즈와 비교하므로, 릴리즈마다 실제 버전이 들어가야 오탐이 없다.)
+APP_VERSION="${APP_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+APP_VERSION="${APP_VERSION:-0.0.0-dev}"
+echo "▶ 앱 버전: ${APP_VERSION}"
+
 echo "▶ 릴리즈 빌드 중..."
 swift build -c release
 
@@ -45,9 +52,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

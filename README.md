@@ -1,4 +1,8 @@
-# Port Killer 🐟
+<p align="center">
+  <img src="assets/logo.png" alt="Port Killer" width="160" />
+</p>
+
+<h1 align="center">Port Killer 🐟</h1>
 
 macOS 메뉴바에 살면서 **개발 서버가 점유 중인 포트**를 한눈에 보여주고, 클릭 한 번으로 종료하는 도구입니다.
 
@@ -40,6 +44,15 @@ brew install --cask kingsfavor/tap/port-killer
    - **포트 번호 / PID 복사**
 3. 시스템·벤더 프로세스까지 보려면 **"시스템·백그라운드 포트 표시"** 를 켜세요.
 4. 목록은 메뉴를 열 때마다 새로고침되며, `⌘R` 로도 갱신됩니다.
+
+## 업데이트
+
+앱이 하루에 한 번 조용히 최신 릴리즈를 확인합니다(백그라운드, 실패 시 무시). 새 버전이 있으면 메뉴 하단에 **"새 버전 X.Y.Z 사용 가능"** 항목이 나타납니다.
+
+- **릴리즈 노트 보기** — 변경 사항 페이지를 엽니다.
+- **업데이트 명령 복사 (brew)** — `brew upgrade --cask port-killer` 를 클립보드에 복사합니다.
+
+앱이 스스로 교체하지는 않습니다. Homebrew 로 설치했다면 위 명령으로, 직접 내려받았다면 최신 `.dmg` 로 교체하세요.
 
 ## 제거
 

@@ -49,8 +49,9 @@ swift build
 | `Sources/PortKiller/ProcessKiller.swift` | SIGTERM/SIGKILL 전송 및 결과 분류 |
 | `Sources/PortKiller/AppDelegate.swift` | 메뉴바 상태 아이템 · 메뉴 구성 · 액션 |
 | `Sources/PortKiller/Notifier.swift` | 종료 결과 시스템 알림 |
+| `Sources/PortKiller/UpdateChecker.swift` | GitHub Releases 최신 버전 확인(하루 1회, 조용히) |
 | `Sources/PortKiller/main.swift` | 진입점 · `--list` CLI 모드 |
-| `Tools/GenerateIcon.swift` | 물고기 앱 아이콘(.icns) 생성 |
+| `Tools/GenerateIcon.swift` | `assets/logo.png` → 앱 아이콘(.icns) 생성 |
 | `Tools/GenerateDMGBackground.swift` | DMG 배경 이미지 생성 |
 | `Tools/make_dmg.sh` | 배경/레이아웃 적용 설치 DMG 빌드 |
 | `make_app.sh` | `.app` 번들 빌드 + 아이콘 + 서명 |

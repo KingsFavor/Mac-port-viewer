@@ -42,9 +42,6 @@ jobs:
       - name: Show versions
         run: swift --version && xcodebuild -version
 
-      - name: Build .app bundle
-        run: ./make_app.sh
-
       - name: Determine version & release mode
         id: ver
         run: |
@@ -60,6 +57,11 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "▶ tag=$TAG version=${TAG#v}"
+
+      - name: Build .app bundle
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./make_app.sh
 
       # ---- 코드 서명 (Developer ID Application) ----
       - name: Import signing certificate

@@ -26,15 +26,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             image?.isTemplate = true
             button.image = image
+            button.toolTip = "Port Killer"
         }
 
         menu.delegate = self
         statusItem.menu = menu
+
+        // 지난 세션에서 이미 감지한 업데이트가 있으면 툴팁에 반영
+        applyUpdateBadge()
+        // 시작 직후 조용히 최신 버전 확인 (실패 시 무시)
+        UpdateChecker.shared.checkIfDue { [weak self] in self?.applyUpdateBadge() }
     }
 
     // 메뉴가 열릴 때마다 최신 상태로 다시 그린다.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // 메뉴를 열 때마다(간격 경과 시) 조용히 재확인 — 다음 열람부터 반영된다.
+        UpdateChecker.shared.checkIfDue { [weak self] in self?.applyUpdateBadge() }
         rebuildMenu()
+    }
+
+    /// 업데이트 유무를 상태 아이콘 툴팁에 은은하게 반영한다.
+    private func applyUpdateBadge() {
+        if let update = UpdateChecker.shared.availableUpdate {
+            statusItem?.button?.toolTip = "Port Killer — 새 버전 \(update.version) 사용 가능"
+        } else {
+            statusItem?.button?.toolTip = "Port Killer"
+        }
     }
 
     private func rebuildMenu() {
@@ -75,6 +92,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         toggle.state = showSystem ? .on : .off
         menu.addItem(toggle)
+
+        // 업데이트 안내 (있을 때만, 포트 목록 아래 · 종료 위에 은은하게)
+        if let update = UpdateChecker.shared.availableUpdate {
+            menu.addItem(.separator())
+
+            let item = NSMenuItem(title: "새 버전 \(update.version) 사용 가능", action: nil, keyEquivalent: "")
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+
+            let sub = NSMenu()
+            let notes = NSMenuItem(title: "릴리즈 노트 보기", action: #selector(openReleaseNotes), keyEquivalent: "")
+            notes.target = self
+            sub.addItem(notes)
+
+            let copyCmd = NSMenuItem(title: "업데이트 명령 복사 (brew)", action: #selector(copyUpgradeCommand), keyEquivalent: "")
+            copyCmd.target = self
+            sub.addItem(copyCmd)
+
+            item.submenu = sub
+            menu.addItem(item)
+        }
 
         menu.addItem(.separator())
 
@@ -179,6 +216,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    // MARK: - Update actions
+
+    @objc private func openReleaseNotes() {
+        guard let update = UpdateChecker.shared.availableUpdate else { return }
+        NSWorkspace.shared.open(update.url)
+    }
+
+    @objc private func copyUpgradeCommand() {
+        let cmd = "brew upgrade --cask port-killer"
+        setClipboard(cmd)
+        Notifier.show(
+            title: "업데이트 명령 복사됨",
+            body: "터미널에 붙여넣어 실행하세요: \(cmd)"
+        )
     }
 
     @objc private func quitApp() {
