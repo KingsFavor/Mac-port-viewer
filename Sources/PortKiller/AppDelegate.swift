@@ -11,9 +11,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         get { defaults.bool(forKey: "showSystemPorts") }
         set { defaults.set(newValue, forKey: "showSystemPorts") }
     }
+    // 업데이트가 설치되면 유휴 상태에서 자동 재실행할지 (기본 ON)
+    private var autoRelaunch: Bool {
+        get { defaults.object(forKey: "autoRelaunchOnUpdate") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoRelaunchOnUpdate") }
+    }
 
     // 마지막 스캔 결과 (메뉴가 열려 있는 동안 액션에서 사용)
     private var lastScan: [PortProcess] = []
+
+    // 자동 재실행 상태
+    private var menuIsOpen = false
+    private var relaunchScheduled = false
+    private var autoRelaunchTimer: Timer?
+    private var bundleWatchSource: DispatchSourceFileSystemObject?
+    private var bundleWatchFD: Int32 = -1
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 메뉴바 전용 앱: Dock/앱 전환기에 표시하지 않음
@@ -45,6 +57,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         applyUpdateBadge()
         // 시작 직후 조용히 최신 버전 확인 (실패 시 무시)
         UpdateChecker.shared.checkIfDue { [weak self] in self?.applyUpdateBadge() }
+
+        // brew 가 .app 을 교체하는 즉시 감지해 자동 재실행하기 위한 파일시스템 감시.
+        startBundleWatch()
+        // 감시가 이벤트를 놓치는 경우를 대비한 백스톱 주기 점검.
+        // (메뉴 트래킹 중에는 기본 런루프 타이머가 멈추므로 자연히 메뉴 열림 중엔 동작하지 않음)
+        autoRelaunchTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.maybeAutoRelaunch()
+        }
+        maybeAutoRelaunch()
+    }
+
+    /// 번들이 들어있는 디렉토리를 감시한다. brew 가 새 .app 을 이 안으로 옮기면
+    /// 이벤트가 발생하고, 유휴 상태면 곧바로 자동 재실행으로 이어진다.
+    private func startBundleWatch() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+        let fd = open(parent, O_EVTONLY)
+        guard fd >= 0 else { return }
+        bundleWatchFD = fd
+        let src = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete],
+            queue: .main
+        )
+        src.setEventHandler { [weak self] in self?.maybeAutoRelaunch() }
+        src.setCancelHandler { [weak self] in
+            if let fd = self?.bundleWatchFD, fd >= 0 { close(fd) }
+            self?.bundleWatchFD = -1
+        }
+        src.resume()
+        bundleWatchSource = src
     }
 
     // 메뉴가 열릴 때마다 최신 상태로 다시 그린다.
@@ -52,6 +95,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         // 메뉴를 열 때마다(간격 경과 시) 조용히 재확인 — 다음 열람부터 반영된다.
         UpdateChecker.shared.checkIfDue { [weak self] in self?.applyUpdateBadge() }
         rebuildMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        // 메뉴를 닫자마자(업그레이드 직후일 수 있음) 자동 재실행 여부 점검
+        maybeAutoRelaunch()
+    }
+
+    /// 유휴 상태에서 디스크에 새 버전이 설치돼 있으면 조용히 재실행한다.
+    private func maybeAutoRelaunch() {
+        guard autoRelaunch, !menuIsOpen, !relaunchScheduled else { return }
+        guard UpdateChecker.shared.pendingRestartVersion != nil else { return }
+
+        relaunchScheduled = true
+        // brew 가 번들 파일을 모두 옮길 시간을 잠깐 준 뒤, 여전히 유휴·설치됨이면 재실행.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            self.relaunchScheduled = false
+            guard self.autoRelaunch, !self.menuIsOpen,
+                  UpdateChecker.shared.pendingRestartVersion != nil else { return }
+            self.relaunchApp()
+        }
     }
 
     /// 업데이트 상태를 상태 아이콘 툴팁에 은은하게 반영한다.
@@ -104,6 +173,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         toggle.target = self
         toggle.state = showSystem ? .on : .off
         menu.addItem(toggle)
+
+        // 업데이트 설치 시 자동 재실행 토글
+        let autoItem = NSMenuItem(title: "업데이트 설치되면 자동 재실행", action: #selector(toggleAutoRelaunch), keyEquivalent: "")
+        autoItem.target = self
+        autoItem.state = autoRelaunch ? .on : .off
+        menu.addItem(autoItem)
 
         // 수동 업데이트 확인 (원할 때 즉시 · 결과는 알림으로)
         let checkUpdate = NSMenuItem(title: "업데이트 확인", action: #selector(checkForUpdatesNow), keyEquivalent: "")
@@ -214,6 +289,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc private func toggleSystem() {
         showSystem.toggle()
         rebuildMenu()
+    }
+
+    @objc private func toggleAutoRelaunch() {
+        autoRelaunch.toggle()
+        // 방금 켰고 이미 새 버전이 설치돼 있으면 점검(재실행은 메뉴 닫힌 뒤)
+        if autoRelaunch { maybeAutoRelaunch() }
     }
 
     @objc private func killTerm(_ sender: NSMenuItem) {

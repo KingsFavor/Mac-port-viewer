@@ -52,6 +52,16 @@ final class UpdateChecker {
         resolvedResult(networkOK: true)
     }
 
+    /// 디스크에 실행 중 버전보다 높은 번들이 설치돼 있으면 그 버전, 아니면 nil.
+    /// (자동 재실행 판단용 — 네트워크 불필요)
+    var pendingRestartVersion: String? {
+        guard Bundle.main.bundleIdentifier != nil else { return nil }
+        if let disk = Self.installedVersion, Self.isNewer(disk, than: Self.currentVersion) {
+            return disk
+        }
+        return nil
+    }
+
     /// 상태 판정: 디스크에 이미 새 버전이 있으면 재실행, 아니면 릴리즈 캐시로 다운로드 안내.
     private func resolvedResult(networkOK: Bool) -> CheckResult {
         let running = Self.currentVersion
