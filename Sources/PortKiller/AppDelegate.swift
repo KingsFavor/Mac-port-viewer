@@ -1,6 +1,7 @@
 import AppKit
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
 
@@ -31,6 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.delegate = self
         statusItem.menu = menu
+
+        // 알림: accessory 앱이 활성 상태여도 배너가 뜨도록 delegate 지정 +
+        //       권한을 시작 시점에 미리 요청해 첫 알림이 유실되지 않게 한다.
+        if Bundle.main.bundleIdentifier != nil {
+            let center = UNUserNotificationCenter.current()
+            center.delegate = self
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
 
         // 지난 세션에서 이미 감지한 업데이트가 있으면 툴팁에 반영
         applyUpdateBadge()
@@ -246,26 +255,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Update actions
 
     @objc private func checkForUpdatesNow() {
+        // 사용자가 직접 누른 액션이므로 결과를 확실히 보여준다(결과 창).
         UpdateChecker.shared.checkNow { [weak self] result in
-            self?.applyUpdateBadge()
-            switch result {
-            case .updateAvailable(let version, _):
-                Notifier.show(
-                    title: "새 버전 \(version) 사용 가능",
-                    body: "메뉴에서 릴리즈 노트 보기 또는 업데이트 명령 복사를 선택하세요."
-                )
-            case .upToDate(let current):
-                Notifier.show(
-                    title: "최신 버전입니다",
-                    body: "현재 \(current) 버전을 사용 중입니다."
-                )
-            case .failed:
-                Notifier.show(
-                    title: "업데이트 확인 실패",
-                    body: "네트워크 연결을 확인한 뒤 다시 시도하세요."
-                )
-            }
+            guard let self else { return }
+            self.applyUpdateBadge()
+            self.presentUpdateResult(result)
         }
+    }
+
+    /// "업데이트 확인" 결과를 알림이 아닌 결과 창으로 확실하게 노출한다.
+    /// (accessory 앱이라 앞으로 끌어와야 창이 보인다.)
+    private func presentUpdateResult(_ result: UpdateChecker.CheckResult) {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.icon = NSApp.applicationIconImage
+
+        switch result {
+        case .updateAvailable(let version, let url):
+            alert.messageText = "새 버전 \(version) 사용 가능"
+            alert.informativeText = "현재 \(UpdateChecker.currentVersion) 버전을 사용 중입니다."
+            alert.addButton(withTitle: "릴리즈 노트 보기")
+            alert.addButton(withTitle: "업데이트 명령 복사 (brew)")
+            alert.addButton(withTitle: "닫기")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                NSWorkspace.shared.open(url)
+            case .alertSecondButtonReturn:
+                setClipboard("brew upgrade --cask port-killer")
+            default:
+                break
+            }
+
+        case .upToDate(let current):
+            alert.messageText = "최신 버전입니다"
+            alert.informativeText = "현재 \(current) 버전이 가장 최신입니다."
+            alert.addButton(withTitle: "확인")
+            alert.runModal()
+
+        case .failed:
+            alert.alertStyle = .warning
+            alert.messageText = "업데이트를 확인하지 못했습니다"
+            alert.informativeText = "네트워크 연결을 확인한 뒤 다시 시도하세요."
+            alert.addButton(withTitle: "확인")
+            alert.runModal()
+        }
+    }
+
+    // 알림 배너를 앱이 활성 상태일 때도 표시 (kill 결과 · 자동 업데이트 감지 등)
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     @objc private func openReleaseNotes() {
