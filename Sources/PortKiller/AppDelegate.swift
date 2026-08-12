@@ -129,17 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let scopeIcon = proc.isLoopbackOnly ? "🏠" : "🌐"
         let title = "\(scopeIcon) \(proc.port)  ·  \(proc.command)  (PID \(proc.pid))"
 
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-
-        // 시작 시각: 메뉴엔 상대 시간을 은은하게 (macOS 14+ 는 부제, 그 이하는 제목에 덧붙임)
+        // 시작 시각: 메뉴엔 상대 시간을 은은하게 덧붙인다 (정확한 시각은 하위 메뉴에).
+        let displayTitle: String
         if let started = proc.startedAt {
-            let rel = TimeFormat.relative(started)
-            if #available(macOS 14.4, *) {
-                item.subtitle = "\(rel) 시작"
-            } else {
-                item.title = "\(title)  ·  \(rel)"
-            }
+            displayTitle = "\(title)  ·  \(TimeFormat.relative(started))"
+        } else {
+            displayTitle = title
         }
+
+        let item = NSMenuItem(title: displayTitle, action: nil, keyEquivalent: "")
 
         // 각 포트는 서브메뉴로 액션 제공
         let submenu = NSMenu()
