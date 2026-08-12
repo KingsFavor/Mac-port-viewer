@@ -93,6 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.state = showSystem ? .on : .off
         menu.addItem(toggle)
 
+        // 수동 업데이트 확인 (원할 때 즉시 · 결과는 알림으로)
+        let checkUpdate = NSMenuItem(title: "업데이트 확인", action: #selector(checkForUpdatesNow), keyEquivalent: "")
+        checkUpdate.target = self
+        menu.addItem(checkUpdate)
+
         // 업데이트 안내 (있을 때만, 포트 목록 아래 · 종료 위에 은은하게)
         if let update = UpdateChecker.shared.availableUpdate {
             menu.addItem(.separator())
@@ -126,8 +131,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
 
+        // 시작 시각: 메뉴엔 상대 시간을 은은하게 (macOS 14+ 는 부제, 그 이하는 제목에 덧붙임)
+        if let started = proc.startedAt {
+            let rel = TimeFormat.relative(started)
+            if #available(macOS 14.4, *) {
+                item.subtitle = "\(rel) 시작"
+            } else {
+                item.title = "\(title)  ·  \(rel)"
+            }
+        }
+
         // 각 포트는 서브메뉴로 액션 제공
         let submenu = NSMenu()
+
+        // 상세: 정확한 시작 시각 (비활성 헤더)
+        if let started = proc.startedAt {
+            let detail = NSMenuItem(
+                title: "시작: \(TimeFormat.exact(started))  (\(TimeFormat.relative(started)))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            detail.isEnabled = false
+            submenu.addItem(detail)
+            submenu.addItem(.separator())
+        }
 
         let term = NSMenuItem(title: "종료 (SIGTERM)", action: #selector(killTerm(_:)), keyEquivalent: "")
         term.target = self
@@ -219,6 +246,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Update actions
+
+    @objc private func checkForUpdatesNow() {
+        UpdateChecker.shared.checkNow { [weak self] result in
+            self?.applyUpdateBadge()
+            switch result {
+            case .updateAvailable(let version, _):
+                Notifier.show(
+                    title: "새 버전 \(version) 사용 가능",
+                    body: "메뉴에서 릴리즈 노트 보기 또는 업데이트 명령 복사를 선택하세요."
+                )
+            case .upToDate(let current):
+                Notifier.show(
+                    title: "최신 버전입니다",
+                    body: "현재 \(current) 버전을 사용 중입니다."
+                )
+            case .failed:
+                Notifier.show(
+                    title: "업데이트 확인 실패",
+                    body: "네트워크 연결을 확인한 뒤 다시 시도하세요."
+                )
+            }
+        }
+    }
 
     @objc private func openReleaseNotes() {
         guard let update = UpdateChecker.shared.availableUpdate else { return }

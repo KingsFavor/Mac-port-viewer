@@ -34,7 +34,14 @@ final class UpdateChecker {
         return (v, url)
     }
 
-    /// 간격이 지났을 때만 백그라운드에서 확인한다.
+    /// 확인 결과 (수동 확인 시 사용자에게 피드백을 주기 위한 값).
+    enum CheckResult {
+        case upToDate(current: String)
+        case updateAvailable(version: String, url: URL)
+        case failed
+    }
+
+    /// 간격이 지났을 때만 백그라운드에서 조용히 확인한다.
     /// 새 버전을 발견하면 `onNewVersion` 을 메인 스레드에서 호출한다.
     func checkIfDue(onNewVersion: (() -> Void)? = nil) {
         // 정식 번들로 실행될 때만 (swift run / CLI 모드에서는 skip)
@@ -45,20 +52,41 @@ final class UpdateChecker {
             return
         }
 
-        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else { return }
+        fetchLatest { result in
+            if case .updateAvailable = result {
+                DispatchQueue.main.async { onNewVersion?() }
+            }
+        }
+    }
+
+    /// 사용자가 직접 요청한 강제 확인 (간격 무시). 결과를 메인 스레드로 전달한다.
+    func checkNow(completion: @escaping (CheckResult) -> Void) {
+        fetchLatest { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// 최신 릴리즈를 조회하고 결과를 캐시한다. (완료 콜백은 임의 스레드)
+    private func fetchLatest(_ done: @escaping (CheckResult) -> Void) {
+        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
+            done(.failed); return
+        }
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("PortKiller", forHTTPHeaderField: "User-Agent")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
 
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
-            guard let self else { return }
+            guard let self else { done(.failed); return }
             // 성공/실패와 무관하게 마지막 확인 시각을 갱신해 재시도 폭주를 막는다.
             self.defaults.set(Date(), forKey: self.lastCheckKey)
 
             guard let data,
                   let http = resp as? HTTPURLResponse, http.statusCode == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = json["tag_name"] as? String else { return }
+                  let tag = json["tag_name"] as? String else {
+                done(.failed); return
+            }
 
             let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             let htmlURL = (json["html_url"] as? String)
@@ -67,8 +95,11 @@ final class UpdateChecker {
             self.defaults.set(version, forKey: self.latestVersionKey)
             self.defaults.set(htmlURL, forKey: self.latestURLKey)
 
-            if Self.isNewer(version, than: Self.currentVersion) {
-                DispatchQueue.main.async { onNewVersion?() }
+            if Self.isNewer(version, than: Self.currentVersion),
+               let url = URL(string: htmlURL) {
+                done(.updateAvailable(version: version, url: url))
+            } else {
+                done(.upToDate(current: Self.currentVersion))
             }
         }.resume()
     }

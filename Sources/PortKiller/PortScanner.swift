@@ -7,6 +7,7 @@ struct PortProcess: Identifiable, Hashable {
     let user: String         // 로그인 사용자 이름
     let port: Int            // 포트 번호
     let bindHost: String     // 바인딩된 호스트 (예: 127.0.0.1, *, ::1)
+    let startedAt: Date?     // 프로세스(PID) 시작 시각. 조회 실패 시 nil
 
     var id: String { "\(pid)-\(port)" }
 
@@ -56,6 +57,9 @@ enum PortScanner {
         var command = ""
         var user = ""
 
+        // 같은 PID 가 여러 포트를 열 수 있으므로 시작 시각 조회는 PID 당 한 번만.
+        var startCache: [Int32: Date?] = [:]
+
         for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let tag = line.first else { continue }
             let value = String(line.dropFirst())
@@ -74,12 +78,18 @@ enum PortScanner {
                 guard let (host, port) = parseHostPort(value) else { continue }
                 let key = "\(pid)-\(port)"
                 if results[key] == nil, pid > 0 {
+                    let started = startCache[pid] ?? {
+                        let t = startTime(pid: pid)
+                        startCache[pid] = t
+                        return t
+                    }()
                     results[key] = PortProcess(
                         pid: pid,
                         command: command,
                         user: user,
                         port: port,
-                        bindHost: host
+                        bindHost: host,
+                        startedAt: started
                     )
                 }
             default:
@@ -103,6 +113,21 @@ enum PortScanner {
             host = String(host.dropFirst().dropLast())
         }
         return (host, port)
+    }
+
+    /// 커널에서 PID 의 시작 시각을 읽는다. (`sysctl(KERN_PROC_PID)` → `kinfo_proc.kp_proc.p_starttime`)
+    /// 서브프로세스 없이 로케일과 무관하게 정확한 에폭 시각을 얻는다.
+    static func startTime(pid: Int32) -> Date? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        let rc = mib.withUnsafeMutableBufferPointer { mibPtr in
+            sysctl(mibPtr.baseAddress, UInt32(mibPtr.count), &info, &size, nil, 0)
+        }
+        guard rc == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_un.__p_starttime   // struct timeval
+        guard tv.tv_sec > 0 else { return nil }
+        return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
     }
 
     private static func runLsof() -> String? {

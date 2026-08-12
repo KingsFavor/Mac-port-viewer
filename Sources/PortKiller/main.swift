@@ -8,7 +8,8 @@ if CommandLine.arguments.contains("--list") {
     print("총 \(all.count)개 LISTEN 포트 (표시 \(visible.count)개, 시스템 숨김 \(all.count - visible.count)개)")
     for p in visible {
         let scope = p.isLoopbackOnly ? "🏠" : "🌐"
-        print("  \(scope) \(p.port)\t\(p.command) (PID \(p.pid), \(p.user))")
+        let started = p.startedAt.map { " · 시작 \(TimeFormat.relative($0))" } ?? ""
+        print("  \(scope) \(p.port)\t\(p.command) (PID \(p.pid), \(p.user))\(started)")
     }
     exit(0)
 }
