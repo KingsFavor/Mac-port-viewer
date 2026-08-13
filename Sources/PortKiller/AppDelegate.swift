@@ -336,11 +336,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc private func copyPort(_ sender: NSMenuItem) {
         guard let proc = sender.representedObject as? PortProcess else { return }
         setClipboard(String(proc.port))
+        Notifier.show(title: "복사됨", body: "포트 번호 \(proc.port) 을(를) 클립보드에 복사했습니다.")
     }
 
     @objc private func copyPid(_ sender: NSMenuItem) {
         guard let proc = sender.representedObject as? PortProcess else { return }
         setClipboard(String(proc.pid))
+        Notifier.show(title: "복사됨", body: "PID \(proc.pid) 을(를) 클립보드에 복사했습니다.")
     }
 
     private func setClipboard(_ text: String) {
