@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
@@ -15,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private var autoRelaunch: Bool {
         get { defaults.object(forKey: "autoRelaunchOnUpdate") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "autoRelaunchOnUpdate") }
+    }
+    // 로그인(부팅) 시 자동 시작 — 실제 등록 상태는 SMAppService 가 소유하므로 그걸 원본으로 본다.
+    private var launchAtLogin: Bool {
+        SMAppService.mainApp.status == .enabled
     }
 
     // 마지막 스캔 결과 (메뉴가 열려 있는 동안 액션에서 사용)
@@ -51,6 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             let center = UNUserNotificationCenter.current()
             center.delegate = self
             center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+
+        // 부팅 시 자동 시작: 아직 등록되지 않았다면 기본으로 켠다.
+        // (사용자가 명시적으로 껐다면 존중 — 그 선택을 UserDefaults 에 기록해 둔다.)
+        if defaults.object(forKey: "launchAtLoginDisabledByUser") as? Bool != true {
+            setLaunchAtLogin(true)
         }
 
         // 지난 세션에서 이미 감지한 업데이트가 있으면 툴팁에 반영
@@ -174,6 +185,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         toggle.state = showSystem ? .on : .off
         menu.addItem(toggle)
 
+        // 부팅(로그인) 시 자동 시작 토글
+        let loginItem = NSMenuItem(title: "로그인 시 자동 시작", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        loginItem.target = self
+        loginItem.state = launchAtLogin ? .on : .off
+        menu.addItem(loginItem)
+
         // 업데이트 설치 시 자동 재실행 토글
         let autoItem = NSMenuItem(title: "업데이트 설치되면 자동 재실행", action: #selector(toggleAutoRelaunch), keyEquivalent: "")
         autoItem.target = self
@@ -289,6 +306,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc private func toggleSystem() {
         showSystem.toggle()
         rebuildMenu()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        setLaunchAtLogin(!launchAtLogin)
+        rebuildMenu()
+    }
+
+    /// 로그인 항목 등록/해제. 성공/실패를 사용자에게 알린다.
+    /// 사용자가 직접 끈 경우는 기록해 두어, 다음 실행에서 기본값(켜짐)이 이를 되돌리지 않게 한다.
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        do {
+            if enabled {
+                if service.status != .enabled {
+                    try service.register()
+                }
+                defaults.set(false, forKey: "launchAtLoginDisabledByUser")
+            } else {
+                if service.status == .enabled {
+                    try service.unregister()
+                }
+                defaults.set(true, forKey: "launchAtLoginDisabledByUser")
+            }
+        } catch {
+            Notifier.show(
+                title: enabled ? "자동 시작 등록 실패" : "자동 시작 해제 실패",
+                body: "\(error.localizedDescription) — 앱이 /Applications 에 설치되어 있는지 확인하세요."
+            )
+        }
     }
 
     @objc private func toggleAutoRelaunch() {
